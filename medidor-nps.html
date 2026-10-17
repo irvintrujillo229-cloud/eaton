@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medidor NPS</title>
+<style>
+  :root {
+    --panel: #434b6a;      /* fondo del tablero */
+    --dial: #252a37;       /* fondo oscuro del dial */
+    --text: #e8ebf5;
+    --muted: #aab1c8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--panel);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 32px 48px;
+  }
+  .gauge { text-align: center; }
+  .gauge.small { width: 220px; }
+  .gauge.big   { width: 340px; }
+  .gauge svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .caption { margin-top: 6px; font-size: 13px; color: var(--muted); letter-spacing: .2px; }
+  .gauge.big .caption { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="row">
+  <div id="g1" class="gauge small"></div>
+  <div id="g2" class="gauge small"></div>
+  <div id="g3" class="gauge big"></div>
+</div>
+
+<script>
+/* ============================================================
+   CONFIGURACIÓN
+   Cambia los valores, rangos y colores aquí.
+   ============================================================ */
+
+// Rangos de color: "to" es la fracción (0 a 1) del total donde termina cada zona.
+const SEGMENTS = [
+  { to: 0.20, color: "#2ee6c8" },   // verde agua brillante
+  { to: 0.40, color: "#3b8f8d" },   // verde azulado oscuro
+  { to: 0.65, color: "#e07fd2" },   // rosa
+  { to: 0.85, color: "#c85b7c" },   // rosa rojizo
+  { to: 1.00, color: "#ff3d5e" }    // rojo
+];
+
+const GAUGES = [
+  { el: "g1", type: "small", value: 85.71, min: 0, max: 100, decimals: 2, suffix: "%", caption: "Respuestas completas" },
+  { el: "g2", type: "small", value: 14.29, min: 0, max: 100, decimals: 2, suffix: "%", caption: "Respuestas parciales" },
+  { el: "g3", type: "big",   value: 54.76, min: 0, max: 100, decimals: 2, suffix: "",  caption: "Net Promoter Score (NPS) general" }
+];
+
+/* ============================================================
+   MOTOR DEL MEDIDOR (no necesitas tocar esto)
+   ============================================================ */
+
+const NS = "http://www.w3.org/2000/svg";
+
+const LAYOUTS = {
+  big: {
+    w: 300, h: 300, cx: 150, cy: 150,
+    rOut: 132, rIn: 114, rDial: 110,
+    start: 135, sweep: 270,
+    major: 20, minor: 5, labelR: 86,
+    tickMajorLen: 14, tickMinorLen: 7,
+    needleLen: 92, needleBase: 5, hubR: 11,
+    valueY: 214, valueSize: 22, labelSize: 13, fullDial: true
+  },
+  small: {
+    w: 200, h: 128, cx: 100, cy: 100,
+    rOut: 92, rIn: 78, rDial: 76,
+    start: 175, sweep: 190,
+    major: 50, minor: 10, labelR: 58,
+    tickMajorLen: 10, tickMinorLen: 5,
+    needleLen: 66, needleBase: 4, hubR: 8,
+    valueY: 124, valueSize: 17, labelSize: 11, fullDial: false
+  }
+};
+
+function polar(cx, cy, r, deg) {
+  const t = deg * Math.PI / 180;
+  return [cx + r * Math.cos(t), cy + r * Math.sin(t)];
+}
+
+function bandPath(L, a0, a1) {
+  const [x0, y0] = polar(L.cx, L.cy, L.rOut, a0);
+  const [x1, y1] = polar(L.cx, L.cy, L.rOut, a1);
+  const [x2, y2] = polar(L.cx, L.cy, L.rIn, a1);
+  const [x3, y3] = polar(L.cx, L.cy, L.rIn, a0);
+  const large = (a1 - a0) > 180 ? 1 : 0;
+  return `M${x0},${y0} A${L.rOut},${L.rOut} 0 ${large} 1 ${x1},${y1} ` +
+         `L${x2},${y2} A${L.rIn},${L.rIn} 0 ${large} 0 ${x3},${y3} Z`;
+}
+
+function buildSvg(cfg, uid) {
+  const L = LAYOUTS[cfg.type];
+  const range = cfg.max - cfg.min;
+  const end = L.start + L.sweep;
+  let s = `<svg xmlns="${NS}" viewBox="0 0 ${L.w} ${L.h}" role="img" aria-label="${cfg.caption}">`;
+
+  s += `<defs>
+    <filter id="glow${uid}" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2.2" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+    <radialGradient id="dial${uid}" cx="50%" cy="45%" r="60%">
+      <stop offset="0" stop-color="#2d3342"/>
+      <stop offset="1" stop-color="#1f2330"/>
+    </radialGradient>
+  </defs>`;
+
+  // Fondo oscuro del dial
+  if (L.fullDial) {
+    s += `<circle cx="${L.cx}" cy="${L.cy}" r="${L.rDial}" fill="url(#dial${uid})"/>`;
+  } else {
+    const [dx0, dy0] = polar(L.cx, L.cy, L.rDial, L.start);
+    const [dx1, dy1] = polar(L.cx, L.cy, L.rDial, end);
+    s += `<path d="M${dx0},${dy0} A${L.rDial},${L.rDial} 0 0 1 ${dx1},${dy1} Z" fill="url(#dial${uid})"/>`;
+  }
+
+  // Bandas de color
+  let prev = 0;
+  SEGMENTS.forEach(seg => {
+    const a0 = L.start + prev * L.sweep;
+    const a1 = L.start + seg.to * L.sweep;
+    s += `<path d="${bandPath(L, a0, a1)}" fill="${seg.color}"/>`;
+    prev = seg.to;
+  });
+
+  // Marcas de escala y etiquetas
+  const steps = Math.round(range / L.minor);
+  for (let i = 0; i <= steps; i++) {
+    const v = cfg.min + i * L.minor;
+    const isMajor = Math.abs((v - cfg.min) % L.major) < 1e-9;
+    const a = L.start + ((v - cfg.min) / range) * L.sweep;
+    const len = isMajor ? L.tickMajorLen : L.tickMinorLen;
+    const [x1, y1] = polar(L.cx, L.cy, L.rDial - 2, a);
+    const [x2, y2] = polar(L.cx, L.cy, L.rDial - 2 - len, a);
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#c9cfe0" stroke-opacity="${isMajor ? .9 : .45}" stroke-width="${isMajor ? 1.8 : 1}" stroke-linecap="round"/>`;
+    if (isMajor) {
+      const [tx, ty] = polar(L.cx, L.cy, L.labelR, a);
+      s += `<text x="${tx}" y="${ty}" fill="#aab1c8" font-size="${L.labelSize}" text-anchor="middle" dominant-baseline="central">${v}</text>`;
+    }
+  }
+
+  // Aguja (se dibuja apuntando a la derecha y luego se rota)
+  const nx = L.cx + L.needleLen;
+  s += `<g class="needle" id="needle${uid}" style="transform-origin:${L.cx}px ${L.cy}px; transform:rotate(${L.start}deg); transition:transform 1.4s cubic-bezier(.2,.9,.25,1.08);" filter="url(#glow${uid})">
+          <polygon points="${nx},${L.cy} ${L.cx},${L.cy - L.needleBase} ${L.cx},${L.cy + L.needleBase}" fill="#ffffff"/>
+        </g>`;
+  s += `<circle cx="${L.cx}" cy="${L.cy}" r="${L.hubR + 4}" fill="#ffffff" fill-opacity=".18"/>`;
+  s += `<circle cx="${L.cx}" cy="${L.cy}" r="${L.hubR}" fill="#ffffff" filter="url(#glow${uid})"/>`;
+
+  // Valor numérico
+  s += `<text id="val${uid}" x="${L.cx}" y="${L.valueY}" fill="#eef0f8" font-size="${L.valueSize}" text-anchor="middle">0</text>`;
+  s += `</svg>`;
+  return s;
+}
+
+function fmt(v, cfg) {
+  return v.toLocaleString("es-MX", {
+    minimumFractionDigits: cfg.decimals,
+    maximumFractionDigits: cfg.decimals
+  }) + (cfg.suffix || "");
+}
+
+function renderGauge(cfg, uid) {
+  const host = document.getElementById(cfg.el);
+  const L = LAYOUTS[cfg.type];
+  host.innerHTML = buildSvg(cfg, uid) + `<div class="caption">${cfg.caption}</div>`;
+
+  const needle = host.querySelector("#needle" + uid);
+  const label  = host.querySelector("#val" + uid);
+  label.textContent = fmt(cfg.min, cfg);
+
+  const clamped = Math.max(cfg.min, Math.min(cfg.max, cfg.value));
+  const frac = (clamped - cfg.min) / (cfg.max - cfg.min);
+  const angle = L.start + frac * L.sweep;
+
+  // Animación de la aguja
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    needle.style.transform = `rotate(${angle}deg)`;
+  }));
+
+  // Animación del número
+  const dur = 1400, t0 = performance.now();
+  (function tick(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    label.textContent = fmt(cfg.min + (cfg.value - cfg.min) * eased, cfg);
+    if (p < 1) requestAnimationFrame(tick);
+  })(t0);
+}
+
+GAUGES.forEach((g, i) => renderGauge(g, i + 1));
+</script>
+</body>
+</html>
